@@ -1,0 +1,506 @@
+---
+title: "Matched cohort tangram analysis"
+author: "Kyle Rove"
+date: "9/19/2019"
+output: html_document
+---
+
+## include libs
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tangram)
+library(MatchIt)
+library(geepack)
+library(broom)
+```
+
+## Define patient population
+
+```{r}
+set.seed(1)
+
+# patient identifier
+study_id <- c(1:100)
+
+# match on these variables
+age     <- rnorm(n=length(study_id),mean=10,sd=2)                            # years
+sex     <- factor(sample(c(0,1), replace=TRUE, size=length(study_id)))       # M=0, F=1
+lang    <- factor(sample(c(0,1,2,3), replace=TRUE, size=length(study_id)))   # 0 = english, 1 = spanish, 2 = french, 3 = other
+
+# outcomes
+opioids <- rlnorm(n=length(study_id),0.88,0.67)                              # opioids in mg/kg
+los     <- rlnorm(n=length(study_id),3.4,0.67)                               # length of stay in days
+nsaid   <- factor(c(rep(0,20),rep(1,80)))                                    # 0 = no nsaid given, 1 = nsaid given
+neuro   <- factor(sample(c(0,1,2,3,4), replace=TRUE, size=length(study_id))) # 0 = cervical, 1 = thoracic, 2 = lumbar, 3 = sacral, 4 = other
+
+# comparison / arm
+group   <- c(rep(0,70),rep(1,30))                                            # 0 = historical, 1 = prospective cohort
+
+# create data frame
+df     <- as_tibble(cbind(study_id,age,sex,lang,opioids,los,nsaid,neuro,group))
+```
+
+## Create matched groups, 1:1 and 2:1
+# reason for two types of matching scenarios is the statistical analysis varies
+# up to this point is just creation of data frames for analysis, m1.final and m2.final
+
+```{r}
+# 1:1 example
+m1.out <- matchit(group ~ age + sex + lang, data = df, method = "nearest", ratio = 1)
+m1.df  <- match.data(m1.out)
+m1.treat <- as_tibble(df[row.names(m1.out$match.matrix),"study_id"]) %>% mutate(block = row_number())
+m1.final <- as_tibble(df[m1.out$match.matrix,"study_id"]) %>% mutate(block = row_number()) %>% rbind(m1.treat) %>% left_join(m1.df,by="study_id") %>% arrange (block,group)
+
+# 2:1 example
+m2.out <- matchit(group ~ age + sex + lang, data = df, method = "nearest", ratio = 2)
+m2.df  <- match.data(m2.out)
+m2.treat <- as_tibble(df[row.names(m2.out$match.matrix),"study_id"]) %>% mutate(block = row_number())
+m2.contr1 <- as_tibble(df[m2.out$match.matrix[,1],"study_id"]) %>% mutate(block = row_number())
+m2.contr2 <- as_tibble(df[m2.out$match.matrix[,2],"study_id"]) %>% mutate(block = row_number())
+m2.final <- m2.treat %>% rbind(m2.contr1,m2.contr2) %>% left_join(m2.df,by="study_id") %>% arrange (block,group) 
+
+# change factors back to factors
+m1.final$group <- factor(m1.final$group)
+m1.final$sex <- factor(m1.final$sex)
+m1.final$lang <- factor(m1.final$lang)
+m1.final$nsaid <- factor(m1.final$nsaid)
+m1.final$neuro <- factor(m1.final$neuro)
+m2.final$group <- factor(m2.final$group)
+m2.final$sex <- factor(m2.final$sex)
+m2.final$lang <- factor(m2.final$lang)
+m2.final$nsaid <- factor(m2.final$nsaid)
+m2.final$neuro <- factor(m2.final$neuro)
+
+```
+
+## Tangram extension functions
+
+```{r}
+#
+# There are several references that cover this:
+# 
+#
+# 1:1 matching
+#
+# variables          statistical test
+# -----------------  ----------------
+# Numeric X Cat      not applicable
+# Numeric X Numeric  not applicable
+# Cat X Numeric      paired Student's t-test [stats::t.test(x=covariate, y=arm, paired=TRUE)]
+#                    Wilcoxon signed rank test [stats::wilcox.test(x=covariate, y=arm, paired=TRUE)]
+#                       - preferred
+#                    Cox proportional hazards models stratifying on matched groups
+#                       [survival::coxph(outcome ~ covariate + strata(block), data = m1.final)]
+#                       - useful for time to event analysis
+# Cat X Cat          McNemar's test [stats::mcnemar.test(x=covariate, y=arm)]
+#                       - this is for 2 x 2 cases only
+#                       - expects factors
+#                    Stuart Maxwell chi-squared test [DescTools::StuartMaxwellTest(x=covariate, y=arm)]
+#                       - this is for 2 x k polytomous covariates, where k ≥ 2
+#                       - expects factors
+#
+#
+#
+# many:1 matching
+#
+# variables          statistical test
+# -----------------  ----------------
+# Numeric X Cat      not applicable
+# Numeric X Numeric  not applicable
+# Cat X Numeric      logistic regression with generalized estimated equations 
+#                       [geepack::geeglm(formula = outcome ~ covariate, family = binomial("logit"), data = m2.final, id = block, corstr = "independence", zcor = "zcor")]
+#                          - outcome must be binary numeric (not a factor)
+#                          - covariate must be numeric
+#                          - block must be numeric (not a factor)
+#                    conditional logistic regression 
+#                       [survival::clogit(outcome ~ covariate + strata(block), data = m2.final)]
+# Cat X Cat          Cochran-Mantel-Haenszel chi-squared test
+#                       [stats::mantelhaen.test(x=covariate, y=arm, z=block)]
+#                          - strata with only 1 occurence cause errors, there should be check for this
+#                          - covers 2 x 2 and 2 x >2 polytomous covariates
+#
+
+# I favor the following format:
+# ================================================================
+#           N          0                 1          Test Statistic
+#                 30 patients       30 patients                   
+# ----------------------------------------------------------------
+# age      60   10.4 (8.8–11.7)   10.1 (8.9–11.2)        0.570     
+# sex      60       2 (1–2)           2 (1–2)            1.000     
+# lang     60       2 (1–3)           2 (1–3)            0.470     
+# opioids  60    2.4 (1.3–3.8)     2.8 (1.6–4.5)         0.640     
+# los      100  27.3 (18.4–54.6)  32.7 (24.6–45.4)       0.750     
+# nsaid    60       2 (2–2)           2 (2–2)           < 0.001    
+# neuro    60       3 (2–4)           2 (1–4)            0.280     
+# ================================================================
+
+summarize_numerical <- function(table,
+                                row,                     # numerical covariate
+                                column,                  # dichotomous outcome
+                                block,                   # vector of block assignments 
+                                pref_test="wilcox.test", # preferred statistical test
+                                cell_style,
+                                pformat=NULL,
+                                collapse_single=TRUE,
+                                test=TRUE,
+                                ...)
+{
+
+  # get data
+  covariate <- row$data
+  outcome <- column$data
+  n_matched <- length(levels(as.categorical(block)))
+  
+  # make the df and sort it
+  df <- data.frame(covariate=as.numeric(covariate), outcome=as.numeric(levels(factor(outcome,levels=c(0,1))))[outcome], block=as.numeric(block) )
+  df <- df %>% arrange(block,outcome)
+    
+  # first branch point is whether data is matched 1:1 or 1:many
+  if (n_matched == 2) {
+
+    # paired Student's t-test
+    if (pref_test == "t.test") {
+      # run test
+      stat <- NA
+      stat <- t.test(x=df$covariate[df$outcome == 0], y=df$covariate[df$outcome == 1], paired=TRUE)
+    
+      # get p value
+      if (length(stat) > 1) {
+        p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value)
+      } else {
+        p_val <- cell_style[['p']](p = NA)
+      }
+      
+    # Wilcoxon signed rank test
+    } else if (pref_test == "wilcox.test") {
+      # run test
+      stat <- NA
+      stat <- wilcox.test(x=df$covariate[df$outcome == 0], y=df$covariate[df$outcome == 1], paired=TRUE)
+    
+      # get p value
+      if (length(stat) > 1) {
+        p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value)
+      } else {
+        p_val <- cell_style[['p']](p = NA)
+      }
+      
+    # Cox proportional hazards model stratefied on matched pairs
+    } else if (pref_test == "coxph") {
+      # run regression
+      stat <- NA
+      stat <- survival::coxph(outcome ~ covariate + strata(block), data = df)
+    
+      # get p value
+      if (length(stat) > 1) {
+        p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value)
+      } else {
+        p_val <- cell_style[['p']](p = NA)
+      }
+      
+    # any other specified preferred_test is invalid
+    } else {
+      stat  <- NA
+      p_val <- cell_style[['p']](p = NA)
+    }
+    
+  } else if (n_matched > 2) {
+    
+    # logistic regression with generalized estimating equations
+    if (pref_test == "geeglm") {
+      # run regression
+      stat <- NA
+      stat <- suppressWarnings(geepack::geeglm(formula = outcome ~ covariate, family = binomial("logit"), data = df, id = block, corstr = "independence", zcor = "zcor"))
+    
+      # get p value
+      if (length(stat) > 1) {
+        p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value)
+      } else {
+        p_val <- cell_style[['p']](p = NA)
+      }
+      
+    # conditional logistic regression   
+    } else if (pref_test == "clogit") {
+      # run regression
+      stat <- NA
+      stat <- survival::clogit(outcome ~ covariate + strata(block), data = df)
+    
+      # get p value
+      if (length(stat) > 1) {
+        p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value)
+      } else {
+        p_val <- cell_style[['p']](p = NA)
+      }
+    
+    # any other specified preferred_test is invalid
+    } else {
+      stat  <- NA
+      p_val <- cell_style[['p']](p = NA)
+    }
+  }
+  
+  # Get column names
+  col_categories <- levels(outcome)
+  
+  # Get n values
+  n_labels <- lapply(col_categories, FUN=function(cat_name){
+    x <- covariate[outcome == cat_name]
+    cell_n(length(unique(x)), subcol=cat_name)
+  })
+  
+  # Build table
+  table                                                %>%
+    # Create Headers
+    row_header(derive_label(row))                      %>%
+    col_header("N", col_categories, "Test Statistic")  %>%
+    col_header("",  n_labels,       ""              )  %>%
+    # Add the First column of summary data as an N value
+    add_col(cell_n(length(unique(outcome))))           %>%
+    # Now add median (IQR) for the counts
+    table_apply(col_categories, FUN=
+                  function(tbl, cat_name) {
+                    # Compute each data set
+                    x  <- covariate[outcome == cat_name]
+                    
+                    # Add a column that is a quantile
+                    add_col(tbl, cell_style[['iqr']](x, row$format, na.rm=TRUE))
+                  })                                   %>%
+    # Now add a statistical test for the final column
+    add_col(p_val)
+  
+  table
+}
+
+summarize_categorical <- function(table,
+                                  row,                  # categorical covariate
+                                  column,               # dichotomous outcome
+                                  block,                # vector of block assignments 
+                                  cell_style,
+                                  pformat=NULL,
+                                  collapse_single=TRUE,
+                                  test=TRUE,
+                                  ...)
+{
+  
+  # get data
+  covariate <- as.categorical(row$data)
+  outcome <- as.categorical(column$data)
+  block <- as.categorical(block)
+  n_matched <- length(levels(as.categorical(block)))
+
+  # make the df and sort it
+  df <- data.frame(var=as.numeric(covariate), outcome=as.numeric(levels(factor(outcome,levels=c(0,1))))[outcome], block=as.numeric(block) )
+  df <- df %>% arrange(block,outcome)
+  
+  # define tables and validate
+  grid          <- table(covariate, outcome, block, useNA="no")
+  grid2         <- table(covariate, outcome, useNA="no")
+  validrow      <- which(!apply(grid,1,FUN = function(x){all(x == 0)}))
+  validcol      <- which(!apply(grid,2,FUN = function(x){all(x == 0)}))
+  validblocks   <- which(!apply(grid,3,FUN = function(x){all(x == 0)}))
+  invalidstatum <- which(apply(grid,1,FUN = function(x){sum(ifelse(x==1,1,0))})==1)
+  nrow          <- dim(grid)[1]
+  ncol          <- dim(grid)[2]
+  ntuple        <- dim(grid)[3]
+  denominators  <- matrix(rep(colSums(grid2), nrow), ncol=ncol, byrow=TRUE)
+  
+  # first branch point is whether data is matched 1:1 or 1:many and how many levels the categorical variable has
+  if (n_matched == 2 && length(levels(covariate)) == 2) {
+
+    # McNemar's test
+    stat <- NA
+    stat <- mcnemar.test(x=df$covariate[df$outcome == 0], y=df$covariate[df$outcome == 1])
+    
+    # get p value
+    if (length(stat) > 1) {
+      p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value)
+    } else {
+      p_val <- cell_style[['p']](p = NA)
+    }
+    
+  } else if (n_matched == 2 && length(levels(covariate)) > 2) {
+    
+    # Stuart Maxwell chi-squared test
+    stat <- NA
+    stat <- StuartMaxwellTest(x=df$covariate[df$outcome == 0], y=df$covariate[df$outcome == 1])
+    
+    # get p value
+    if (length(stat) > 1) {
+      p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value[[1]])
+    } else {
+      p_val <- cell_style[['p']](p = NA)
+    }
+    
+  } else if (n_matched > 2) {
+    
+    # Cochran-Mantel-Haenszel chi-squared test
+    stat <- NA
+    stat <- if(length(validrow) < 2 || length(validcol) < 2 || length(validblocks) < 1 || length(invalidstatum) > 0) NA else mantelhaen.test(covariate,outcome,block)
+
+    # get p value
+    if (length(stat) > 1) {
+      p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value)
+    } else {
+      p_val <- cell_style[['p']](p = NA)
+    }
+    
+  }
+  
+  # start collecting row labels
+  rowlabels     <- rownames(grid2)
+  
+  # Compute overall N values for each category
+  subN <- lapply(colnames(grid2), FUN=function(cat)
+    cell_style[['n']](sum(column$data == cat, na.rm=TRUE), subcol=cat, possible=length(column$data), hdr=TRUE, ...)
+  )
+  
+  # Collapse to a single line when requested for 2 binomial factors
+  if(collapse_single && dim(grid2)[1]<=2)
+  {
+    # Why is this so difficult?
+    
+    # More complex name derivation
+    name <- row$name()
+    try({
+      l2 <- attr(row$data, "label")
+      if(!is.null(l2)) {name<-l2}
+    })
+    
+    pos <- dim(grid2)[1]
+    
+    # Select part of grid table, then do all the munging to get it back in form
+    x <- matrix(grid2[pos,], nrow=1)
+    colnames(x) <- colnames(grid2)
+    rownames(x) <- name
+    grid2 <- x
+    denominators <- matrix(denominators[pos,], nrow=1)
+    nrow <- 1
+  }
+  else # Give a good indent otherwise
+  {
+    rownames(grid2)   <- lapply(rownames(grid2), FUN=function(x) paste("  ", x))
+  }
+  
+  # Build the table
+  # Column Headers
+  if(test) {
+    table <- col_header(table, "N", colnames(grid2), "Test Statistic")
+    table <- col_header(table, "", subN, "")
+  } else {
+    table <- col_header(table, "N", colnames(grid2))
+    table <- col_header(table, "", subN)
+  }
+  
+  # Row Headers
+  if(nrow > 1) table <- row_header(table, derive_label(row)) # Deal with single
+  for(nm in rownames(grid2)) table <- row_header(table, nm)
+  
+  # The N value
+  table <- add_col(table, cell_style[['n']](sum(!is.na(row$data)), possible=length(row$data), ...))
+
+  # Now loop the grid2 into the table as a fraction
+  for(j in 1:ncol)
+  {
+    if(nrow > 1) table <- add_row(table, "")
+    format <- if(is.na(row$format) || is.null(row$format)) format_guess(as.vector(grid2/denominators)) else row$format
+    for(i in 1:nrow)
+    {
+      if(denominators[i,j] == 0) {
+        table <- add_row(table, "")
+      } else {
+        table <- add_row(table,
+                   cell_style[['fraction']](
+                     grid2[i,j], denominators[i,j],
+                     format=format,
+                     subcol=colnames(grid2)[i],
+                     subrow=rownames(grid2)[j]))
+      }
+    }
+    table <- new_col(table)
+  }
+  
+  # add the stats
+  table <- add_col(table,p_val)
+    
+  # add blanks in test column if sub-categories
+  if(nrow > 1) table <- add_row(table, rep("", nrow))
+
+  table
+}
+
+psm <- list(
+  Type        = hmisc_data_type,
+  Numerical   = list(
+    Numerical   = summarize_spearman,    # since matched pairs are matched on dichotomous outcomes, we should never hit this
+    Categorical = summarize_kruskal_horz # since matched pairs are matched on dichotomous outcomes, we should never hit this
+  ),
+  Categorical = list(
+    Numerical   = summarize_numerical,
+    Categorical = summarize_categorical
+  ),
+  Cell        = hmisc_cell,
+  Footnote    = "Numerical summary is median (IQR). Categorical is N (%). ^1^Logistic regression with GEE. ^2^Cochran Mantel Maenszel."
+)
+
+psm[['Cell']][['fraction']] <- function(numerator, denominator, format=3, ...) {
+  paste0(numerator,' (',render_f(100*numerator/denominator, format),'%)')
+}
+
+psm[['Cell']][['iqr']] <- function(x,format,na.rm,names=TRUE,type=8,msd, quant = c(0.25, 0.75), ...) {
+  iqr <- quantile(x, c(0.25, 0.75), na.rm, names, type)
+  m <- median(x, na.rm)
+  if(is.na(format)) format <- format_guess(y)
+  iqr_formatted <- sapply(iqr, function(x) render_f(x, format))
+  paste0(render_f(m, format),' (',paste0(iqr_formatted,collapse="–"),')')
+}
+
+psm[['Cell']][['p']] <-  function(p, pformat="%1.3f", include_p=FALSE) {
+  if(class(pformat) == "function") pformat(p)
+  
+  if(is.na(p) || is.nan(p) || p <0 || p>1) return("—")
+  
+  y <- render_f(p, pformat)
+  
+  # Check for all zeros once formated
+  test <- grep("[^0\\.]+", y)
+  if(length(test) > 0) {
+    if(include_p) paste0("p = ",y) else y
+  }
+  else {
+    if(include_p) paste0("p < ", substr(y, 1, nchar(y)-1), "1") else paste0("<", substr(y, 1, nchar(y)-1), "1")
+  }
+}
+```
+
+## Tangram calls, analysis with propensity matched historical controls and prospective treated patients
+
+```{r}
+# 1:1 example
+table1 <- tangram ( group              # 2-level categories are typically only dependent variable to my knowledge in propensity score matching analyses
+                          ~ age[1]     # numeric
+                          + sex        # binary categorical
+                          + lang       # multi-level categorical
+                          + opioids[1] # numeric
+                          + los[1]     # numeric
+                          + nsaid      # binary categorical
+                          + neuro,     # multi-level categorical
+                          data = m1.final, id = "table1", pref_test = "wilcox.test", block = m1.final$block, test = TRUE, transform = psm )
+                              # psm = propensity score matching, seems like a good name for this analysis
+                              # need to pass block vector (block = X) to the transform functions
+                              # if this can be done by passing name and passing vector to functions, all the better
+
+# 2:1 example
+table2 <- tangram ( group              # 2-level categories are typically only dependent variable to my knowledge in propensity score matching analyses
+                          ~ age[1]     # numeric
+                          + sex        # binary categorical
+                          + lang       # multi-level categorical
+                          + opioids[1] # numeric
+                          + los[1]     # numeric
+                          + nsaid      # binary categorical
+                          + neuro,     # multi-level categorical
+                          data = m2.final, id = "table1", block = m2.final$block, test = TRUE, transform = psm )
+                              # psm = propensity score matching, seems like a good name for this analysis
+                              # need to pass block vector (block = X) to the transform functions
+                              # if this can be done by passing name and passing vector to functions, all the better
+```
