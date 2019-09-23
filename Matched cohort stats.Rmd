@@ -421,7 +421,7 @@ summarize_categorical <- function(table,
   }
   
   # add the stats
-  table <- add_col(table,p_val)
+  table <- add_row(table,p_val)
     
   # add blanks in test column if sub-categories
   if(nrow > 1) table <- add_row(table, rep("", nrow))
@@ -433,10 +433,10 @@ psm <- list(
   Type        = hmisc_data_type,
   Numerical   = list(
     Numerical   = summarize_spearman,    # since matched pairs are matched on dichotomous outcomes, we should never hit this
-    Categorical = summarize_kruskal_horz # since matched pairs are matched on dichotomous outcomes, we should never hit this
+    Categorical = summarize_numerical 
   ),
   Categorical = list(
-    Numerical   = summarize_numerical,
+    Numerical   = summarize_numerical,  # since matched pairs are matched on dichotomous outcomes, we should never hit this
     Categorical = summarize_categorical
   ),
   Cell        = hmisc_cell,
