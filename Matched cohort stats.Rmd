@@ -10,6 +10,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
+devtools::install_github("spgarbet/tangram")
 library(tangram)
 library(MatchIt)
 library(geepack)
@@ -80,7 +81,8 @@ m2.final$neuro <- factor(m2.final$neuro)
 ```{r}
 #
 # There are several references that cover this:
-# 
+# [1]	Austin PC. A critical appraisal of propensity-score matching in the medical literature between 1996 and 2003. Statist Med 2008; 27: 2037–49. doi:10.1002/sim.3150.
+# [2] Fleiss JL, Levin B, Paik MC. Statistical Methods for Rates and Proportions (3rd edn). Wiley: New York, NY, 2003.
 #
 # 1:1 matching
 #
@@ -105,34 +107,39 @@ m2.final$neuro <- factor(m2.final$neuro)
 #
 # variables          statistical test
 # -----------------  ----------------
-# Numeric X Cat      not applicable
-# Numeric X Numeric  not applicable
-# Cat X Numeric      logistic regression with generalized estimated equations 
+# Numeric x Cat      logistic regression with generalized estimated equations 
 #                       [geepack::geeglm(formula = outcome ~ covariate, family = binomial("logit"), data = m2.final, id = block, corstr = "independence", zcor = "zcor")]
 #                          - outcome must be binary numeric (not a factor)
 #                          - covariate must be numeric
 #                          - block must be numeric (not a factor)
 #                    conditional logistic regression 
 #                       [survival::clogit(outcome ~ covariate + strata(block), data = m2.final)]
-# Cat X Cat          Cochran-Mantel-Haenszel chi-squared test
+# Cat x Cat          Cochran-Mantel-Haenszel chi-squared test
 #                       [stats::mantelhaen.test(x=covariate, y=arm, z=block)]
 #                          - strata with only 1 occurence cause errors, there should be check for this
 #                          - covers 2 x 2 and 2 x >2 polytomous covariates
 #
 
 # I favor the following format:
-# ================================================================
-#           N          0                 1          Test Statistic
-#                 30 patients       30 patients                   
-# ----------------------------------------------------------------
-# age      60   10.4 (8.8–11.7)   10.1 (8.9–11.2)        0.570     
-# sex      60       2 (1–2)           2 (1–2)            1.000     
-# lang     60       2 (1–3)           2 (1–3)            0.470     
-# opioids  60    2.4 (1.3–3.8)     2.8 (1.6–4.5)         0.640     
-# los      100  27.3 (18.4–54.6)  32.7 (24.6–45.4)       0.750     
-# nsaid    60       2 (2–2)           2 (2–2)           < 0.001    
-# neuro    60       3 (2–4)           2 (1–4)            0.280     
-# ================================================================
+# ==========================================================
+#        N        0                  1            Statistic
+#               (N=30)             (N=30)                    
+# ----------------------------------------------------------
+# sex:F  60    22 (73.3%)        22 (73.333%)         —       
+# los    60  28.4 (20.4-27.6)  45.3 (17.4-29.8)    < 0.001    
+# lang   60                                         0.630     
+#    1        12 (40.0%)          8 (26.6%)                 
+#    2         6 (20.0%)          7 (23.3%)                 
+#    3         6 (20.0%)         10 (33.3%)                 
+#    4         6 (20.0%)          5 (16.6%)                 
+# nsaid  60   23 (76.7%)         30 (100.0%)        0.023     
+# neuro  60                                         0.635     
+#    1         7 (23.3%)         10 (33.3%)                 
+#    2         7 (23.3%)          6 (20.0%)                 
+#    3         2 (6.7%)           5 (16.6%)                 
+#    4         9 (30.0%)          6 (20.0%)                 
+#    5         5 (16.7%)          3 (10.0%)                 
+# ==========================================================
 
 summarize_numerical <- function(table,
                                 row,                     # numerical covariate
@@ -149,7 +156,7 @@ summarize_numerical <- function(table,
   # get data
   covariate <- row$data
   outcome <- column$data
-  n_matched <- length(levels(as.categorical(block)))
+  n_matched <- length(block) / length(levels(as.categorical(block)))
   
   # make the df and sort it
   df <- data.frame(covariate=as.numeric(covariate), outcome=as.numeric(levels(factor(outcome,levels=c(0,1))))[outcome], block=as.numeric(block) )
@@ -176,7 +183,7 @@ summarize_numerical <- function(table,
       # run test
       stat <- NA
       stat <- wilcox.test(x=df$covariate[df$outcome == 0], y=df$covariate[df$outcome == 1], paired=TRUE)
-    
+
       # get p value
       if (length(stat) > 1) {
         p_val <- cell_style[['p']](p = broom::tidy(stat)$p.value)
@@ -243,7 +250,7 @@ summarize_numerical <- function(table,
   
   # Get n values
   n_labels <- lapply(col_categories, FUN=function(cat_name){
-    x <- covariate[outcome == cat_name]
+    x <- df$covariate[df$outcome == cat_name]
     cell_n(length(unique(x)), subcol=cat_name)
   })
   
@@ -259,14 +266,14 @@ summarize_numerical <- function(table,
     table_apply(col_categories, FUN=
                   function(tbl, cat_name) {
                     # Compute each data set
-                    x  <- covariate[outcome == cat_name]
+                    x  <- df$covariate[df$outcome == cat_name]
                     
                     # Add a column that is a quantile
                     add_col(tbl, cell_style[['iqr']](x, row$format, na.rm=TRUE))
                   })                                   %>%
     # Now add a statistical test for the final column
     add_row(p_val)
-  
+
   table
 }
 
@@ -484,7 +491,6 @@ table1 <- tangram ( group              # 2-level categories are typically only d
                           data = m1.final, id = "table1", pref_test = "wilcox.test", block = m1.final$block, test = TRUE, transform = psm )
                               # psm = propensity score matching, seems like a good name for this analysis
                               # need to pass block vector (block = X) to the transform functions
-                              # if this can be done by passing name and passing vector to functions, all the better
 
 # 2:1 example
 table2 <- tangram ( group              # 2-level categories are typically only dependent variable to my knowledge in propensity score matching analyses
@@ -498,5 +504,4 @@ table2 <- tangram ( group              # 2-level categories are typically only d
                           data = m2.final, id = "table1", pref_test = "glmgee", block = m2.final$block, test = TRUE, transform = psm )
                               # psm = propensity score matching, seems like a good name for this analysis
                               # need to pass block vector (block = X) to the transform functions
-                              # if this can be done by passing name and passing vector to functions, all the better
 ```
