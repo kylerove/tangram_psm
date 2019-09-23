@@ -86,9 +86,7 @@ m2.final$neuro <- factor(m2.final$neuro)
 #
 # variables          statistical test
 # -----------------  ----------------
-# Numeric X Cat      not applicable
-# Numeric X Numeric  not applicable
-# Cat X Numeric      paired Student's t-test [stats::t.test(x=covariate, y=arm, paired=TRUE)]
+# Numeric x Cat      paired Student's t-test [stats::t.test(x=covariate, y=arm, paired=TRUE)]
 #                    Wilcoxon signed rank test [stats::wilcox.test(x=covariate, y=arm, paired=TRUE)]
 #                       - preferred
 #                    Cox proportional hazards models stratifying on matched groups
@@ -267,7 +265,7 @@ summarize_numerical <- function(table,
                     add_col(tbl, cell_style[['iqr']](x, row$format, na.rm=TRUE))
                   })                                   %>%
     # Now add a statistical test for the final column
-    add_col(p_val)
+    add_row(p_val)
   
   table
 }
@@ -432,11 +430,9 @@ summarize_categorical <- function(table,
 psm <- list(
   Type        = hmisc_data_type,
   Numerical   = list(
-    Numerical   = summarize_spearman,    # since matched pairs are matched on dichotomous outcomes, we should never hit this
     Categorical = summarize_numerical 
   ),
   Categorical = list(
-    Numerical   = summarize_numerical,  # since matched pairs are matched on dichotomous outcomes, we should never hit this
     Categorical = summarize_categorical
   ),
   Cell        = hmisc_cell,
@@ -499,7 +495,7 @@ table2 <- tangram ( group              # 2-level categories are typically only d
                           + los[1]     # numeric
                           + nsaid      # binary categorical
                           + neuro,     # multi-level categorical
-                          data = m2.final, id = "table1", block = m2.final$block, test = TRUE, transform = psm )
+                          data = m2.final, id = "table1", pref_test = "glmgee", block = m2.final$block, test = TRUE, transform = psm )
                               # psm = propensity score matching, seems like a good name for this analysis
                               # need to pass block vector (block = X) to the transform functions
                               # if this can be done by passing name and passing vector to functions, all the better
