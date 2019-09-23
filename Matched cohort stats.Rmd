@@ -103,7 +103,7 @@ m2.final$neuro <- factor(m2.final$neuro)
 #
 #
 #
-# many:1 matching
+# 1:many matching
 #
 # variables          statistical test
 # -----------------  ----------------
