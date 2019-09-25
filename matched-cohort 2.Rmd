@@ -44,7 +44,7 @@ pre {
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tangram)
-
+library(exact2x2)
 library(tidyverse)
 library(MatchIt)
 library(geepack)
