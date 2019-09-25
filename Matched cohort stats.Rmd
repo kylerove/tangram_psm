@@ -292,7 +292,7 @@ summarize_categorical <- function(table,
   covariate <- as.categorical(row$data)
   outcome <- as.categorical(column$data)
   block <- as.categorical(block)
-  n_matched <- length(levels(as.categorical(block)))
+  n_matched <- length(block) / length(levels(as.categorical(block)))
 
   # make the df and sort it
   df <- data.frame(var=as.numeric(covariate), outcome=as.numeric(levels(factor(outcome,levels=c(0,1))))[outcome], block=as.numeric(block) )
